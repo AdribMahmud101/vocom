@@ -1,0 +1,7 @@
+[package]
+name = "vocom"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+sherpa-onnx = "0.1.10"

@@ -1,0 +1,4 @@
+[env]
+# Use the Linux shared libraries bundled in this workspace.
+SHERPA_ONNX_LIB_DIR = { value = "sherpa-onnx-v1.12.25-linux-x64-shared/lib", relative = true }
+LD_LIBRARY_PATH = { value = "sherpa-onnx-v1.12.25-linux-x64-shared/lib", relative = true }
