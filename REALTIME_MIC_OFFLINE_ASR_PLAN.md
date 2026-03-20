@@ -30,11 +30,156 @@ Update [Cargo.toml](Cargo.toml):
 Suggested additions:
 ```toml
 [dependencies]
-sherpa-onnx = "0.1.10"
+sherpa-onnx = "0.1.12"
 cpal = "0.15"
 crossbeam-channel = "0.5"
 anyhow = "1"
 ```
+
+## Deep Dive: "On silence end, one utterance is decoded"
+
+This means you do not decode every tiny audio chunk.
+You decode only when the current speech segment is considered finished.
+
+### Practical meaning
+
+1. Mic audio arrives continuously in short chunks (for example 20 ms each).
+2. While speech is detected, chunks are appended to one utterance buffer.
+3. Once enough trailing silence is detected, the utterance is closed.
+4. The whole utterance buffer is sent once to OfflineRecognizer.
+5. Transcript is emitted, then buffer/state are reset for the next utterance.
+
+### Why this is needed for OfflineRecognizer
+
+OfflineRecognizer is optimized for full segments, not token-by-token decoding while speaking.
+So the endpoint detector (silence-based segmentation) is the trigger that tells the decoder:
+"This speech unit is done. Decode now."
+
+### Core state machine
+
+- Idle
+: No active speech yet.
+
+- InSpeech
+: Speech is active; keep collecting chunks.
+
+- MaybeEnd
+: A short silence started, but not enough to end yet.
+
+- Ended
+: Silence duration passed threshold; finalize and decode utterance.
+
+### Required counters and buffers
+
+- utterance_samples: Vec<f32>
+: Collected audio for current utterance.
+
+- speech_ms
+: Total detected speech time in current utterance.
+
+- silence_ms
+: Continuous trailing silence duration while inside an utterance.
+
+- chunk_ms
+: Duration per audio chunk (usually 20 ms).
+
+### Endpointing rules (simple and robust)
+
+Assume each chunk is classified as speech or non-speech by VAD (or energy fallback).
+
+When chunk is speech:
+- If state was Idle, start a new utterance.
+- Append chunk to utterance_samples.
+- speech_ms += chunk_ms.
+- silence_ms = 0.
+- state = InSpeech.
+
+When chunk is non-speech and state is InSpeech or MaybeEnd:
+- Append chunk only if you want trailing context.
+- silence_ms += chunk_ms.
+- state = MaybeEnd.
+
+If silence_ms >= speech_end_ms:
+- state = Ended.
+- If speech_ms >= min_utterance_ms: decode utterance_samples.
+- Else: drop as too short/noise.
+- Reset utterance_samples, speech_ms, silence_ms.
+- state = Idle.
+
+Safety cutoff:
+- If speech_ms >= max_utterance_ms, force decode to avoid huge buffers and high latency.
+
+### Starter thresholds
+
+- chunk_ms: 20
+- speech_end_ms: 700
+- min_utterance_ms: 300
+- max_utterance_ms: 15000
+
+Tune per environment:
+- Noisy room: increase speech_end_ms and min_utterance_ms.
+- Fast response needed: reduce speech_end_ms to around 500.
+
+### Pseudocode
+
+```text
+for chunk in mic_stream:
+  is_speech = vad(chunk)
+
+  if is_speech:
+    if state == Idle:
+      start_new_utterance()
+      state = InSpeech
+    append(chunk)
+    speech_ms += chunk_ms
+    silence_ms = 0
+  else if state != Idle:
+    silence_ms += chunk_ms
+    state = MaybeEnd
+
+  if state != Idle and speech_ms >= max_utterance_ms:
+    decode_and_reset()
+
+  if state == MaybeEnd and silence_ms >= speech_end_ms:
+    if speech_ms >= min_utterance_ms:
+      decode_and_reset()
+    else:
+      reset_without_decode()
+```
+
+### Decode call at endpoint
+
+For each ended utterance:
+
+1. Create stream.
+2. Accept waveform at 16000 Hz.
+3. Decode.
+4. Read result.
+
+Equivalent flow in Rust:
+
+```text
+let stream = recognizer.create_stream();
+stream.accept_waveform(16000, &utterance_samples);
+recognizer.decode(&stream);
+let result = stream.get_result();
+```
+
+### Common beginner mistakes
+
+1. Decoding every chunk.
+: Causes high CPU usage and unstable results.
+
+2. Ending utterance too early.
+: Chops words; increase speech_end_ms.
+
+3. No max utterance cap.
+: Large memory/latency spikes for long speech.
+
+4. Doing decode in audio callback thread.
+: Can cause dropouts and audio overruns.
+
+See also beginner glossary and examples in [ASR_BEGINNER_TERMS.md](ASR_BEGINNER_TERMS.md).
 
 ## High-level architecture
 Use a 3-stage pipeline:

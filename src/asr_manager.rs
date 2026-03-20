@@ -1,5 +1,7 @@
 
-use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig};
+use std::path::Path;
+
+use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig, Wave};
 
 #[allow(unused)]
 pub enum ASRVariant {
@@ -31,16 +33,16 @@ pub struct ASRModelBuilder{
 
 impl ASRVariant {
 
-    pub fn get_variant(file_name: &str)-> &Self {
+    pub fn get_variant(file_name: &str)-> Self {
 
         let file = file_name.to_lowercase();
 
         if file.contains("moonshine"){
-            &Self::Moonshinev2 
+            Self::Moonshinev2
         } else if file.contains("whisper"){
-            &Self::Whisper
+            Self::Whisper
         } else{
-            &Self::Unknown
+            Self::Unknown
         }
          
     }
@@ -58,10 +60,9 @@ impl ASRModelBuilder{
             tokens: None,
             num_threads: 2, // defualt to 2 threads
             provider: Some("cpu".to_string()), // default provider
-
             // whisper specific
-            language: None,
-            task: None,
+            language: Some("en".to_string()),
+            task: Some("transcribe".to_string()),
             tail_paddings: -1,
             enable_token_timestamps: false, // false by default
             enable_segment_timestamps: false,
@@ -95,22 +96,39 @@ impl ASRModelBuilder{
 
 
     pub fn build(self)-> Result<OfflineRecognizer,String>{
-        let encoder = self.encoder.ok_or("Encoder path is missing");
-        let decoder = self.decoder.ok_or("Decoder path is missing");
-        let tokens = self.tokens.ok_or("Tokens path is missing"); // returns Result<String, &str>
+        let encoder = self.encoder.ok_or("Encoder path is missing")?;
+        let decoder = self.decoder.ok_or("Decoder path is missing")?;
+        let tokens = self.tokens.ok_or("Tokens path is missing")?;
+
+        // if !Path::new(&encoder).exists() {
+        //     return Err(format!("Encoder file does not exist: {encoder}"));
+        // }
+        // if !Path::new(&decoder).exists() {
+        //     return Err(format!("Decoder file does not exist: {decoder}"));
+        // }
+        // if !Path::new(&tokens).exists() {
+        //     return Err(format!("Tokens file does not exist: {tokens}"));
+        // }
 
         let mut config = OfflineRecognizerConfig::default();
-        config.model_config.tokens = tokens.ok();
+        config.model_config.tokens = Some(tokens);
+        config.model_config.num_threads = self.num_threads;
+        config.model_config.provider = self.provider;
    
         match self.variant {
             ASRVariant::Moonshinev2 => {
-                config.model_config.moonshine.encoder = encoder.ok();
-                config.model_config.moonshine.merged_decoder = decoder.ok();
+                config.model_config.moonshine.encoder = Some(encoder);
+                config.model_config.moonshine.merged_decoder = Some(decoder);
                 
             },
             ASRVariant::Whisper => {
-                config.model_config.whisper.encoder = encoder.ok();
-                config.model_config.whisper.decoder = decoder.ok();
+                config.model_config.whisper.encoder = Some(encoder);
+                config.model_config.whisper.decoder = Some(decoder);
+                // config.model_config.whisper.language = self.language;
+                // config.model_config.whisper.task = self.task;
+                // config.model_config.whisper.tail_paddings = self.tail_paddings;
+                // config.model_config.whisper.enable_token_timestamps = self.enable_token_timestamps;
+                // config.model_config.whisper.enable_segment_timestamps = self.enable_segment_timestamps;
        
             },
             ASRVariant::Unknown => {
@@ -126,17 +144,33 @@ impl ASRModelBuilder{
             Err("Failed to create recognizer from config".to_string())
         }
 
-      
+    }
 
+    pub fn transcribe(
+        offline_recognizer: Result<OfflineRecognizer, String>,
+        file_path: &str,
+    ) -> Result<String, String> {
+        let recognizer = offline_recognizer?;
+        let stream = recognizer.create_stream();
+
+        let wave = Wave::read(file_path)
+            .ok_or_else(|| format!("Failed to read wave path: {file_path}"))?;
+        stream.accept_waveform(wave.sample_rate(), wave.samples());
+        recognizer.decode(&stream);
+
+        if let Some(result) = stream.get_result() {
+            Ok(result.text)
+        } else {
+            Err("Failed to get transcription result".to_string())
+        }
+    }
+
+    pub fn trascribe(offline_recognizer: Result<OfflineRecognizer, String>, file_path: String){
+        match Self::transcribe(offline_recognizer, &file_path) {
+            Ok(text) => println!("Transcription: {}", text),
+            Err(e) => println!("Transcription failed: {}", e),
+        }
     }
 
 
-}
-
-
-
-fn main() {
-
-
-    println!("Hello, world!");
 }
