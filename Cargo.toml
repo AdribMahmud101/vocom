@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-sherpa-onnx = "0.1.12"
+sherpa-onnx = "1.12.31"

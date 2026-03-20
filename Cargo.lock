@@ -4,9 +4,9 @@ version = 4
 
 [[package]]
 name = "itoa"
-version = "1.0.17"
+version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
+checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "memchr"
@@ -77,9 +77,9 @@ dependencies = [
 
 [[package]]
 name = "sherpa-onnx"
-version = "0.1.12"
+version = "1.12.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a559cd0daf89b6d92ef0f2e6e9130a20f65d72dfbc44c9dd15ec8721e5f7445"
+checksum = "e414b22e7b6cffcdd29b51105d0f83cc811ae82e5c226322735acd6198d219dc"
 dependencies = [
  "serde",
  "serde_json",
@@ -88,9 +88,9 @@ dependencies = [
 
 [[package]]
 name = "sherpa-onnx-sys"
-version = "0.1.12"
+version = "1.12.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dad17c2fdeb448945b02273a63a447e0c11e71139d0ca85a96e63b2bddff2f5d"
+checksum = "11d3160579483667a1cc6ba0586a765c289db6a87f501618ebb665c1428629b9"
 
 [[package]]
 name = "syn"

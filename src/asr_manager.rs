@@ -29,8 +29,6 @@ pub struct ASRModelBuilder{
 }
 
 
-
-
 impl ASRVariant {
 
     pub fn get_variant(file_name: &str)-> Self {
@@ -165,12 +163,6 @@ impl ASRModelBuilder{
         }
     }
 
-    pub fn trascribe(offline_recognizer: Result<OfflineRecognizer, String>, file_path: String){
-        match Self::transcribe(offline_recognizer, &file_path) {
-            Ok(text) => println!("Transcription: {}", text),
-            Err(e) => println!("Transcription failed: {}", e),
-        }
-    }
 
 
 }
