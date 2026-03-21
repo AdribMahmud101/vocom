@@ -94,9 +94,9 @@ impl ASRModelBuilder{
 
 
     pub fn build(self)-> Result<OfflineRecognizer,String>{
-        let encoder = self.encoder.ok_or("Encoder path is missing")?;
-        let decoder = self.decoder.ok_or("Decoder path is missing")?;
-        let tokens = self.tokens.ok_or("Tokens path is missing")?;
+        let encoder = self.encoder;
+        let decoder = self.decoder;
+        let tokens = self.tokens;
 
         // if !Path::new(&encoder).exists() {
         //     return Err(format!("Encoder file does not exist: {encoder}"));
@@ -109,19 +109,19 @@ impl ASRModelBuilder{
         // }
 
         let mut config = OfflineRecognizerConfig::default();
-        config.model_config.tokens = Some(tokens);
+        config.model_config.tokens = tokens;
         config.model_config.num_threads = self.num_threads;
         config.model_config.provider = self.provider;
    
         match self.variant {
             ASRVariant::Moonshinev2 => {
-                config.model_config.moonshine.encoder = Some(encoder);
-                config.model_config.moonshine.merged_decoder = Some(decoder);
+                config.model_config.moonshine.encoder = encoder;
+                config.model_config.moonshine.merged_decoder = decoder;
                 
             },
             ASRVariant::Whisper => {
-                config.model_config.whisper.encoder = Some(encoder);
-                config.model_config.whisper.decoder = Some(decoder);
+                config.model_config.whisper.encoder = encoder;
+                config.model_config.whisper.decoder = decoder;
                 // config.model_config.whisper.language = self.language;
                 // config.model_config.whisper.task = self.task;
                 // config.model_config.whisper.tail_paddings = self.tail_paddings;
