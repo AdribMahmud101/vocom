@@ -1,0 +1,52 @@
+{
+  "asr": {
+    "variant": "moonshine_v2",
+    "encoder_path": "models/sherpa-onnx-moonshine-base-en-quantized-2026-02-27/encoder_model.ort",
+    "decoder_path": "models/sherpa-onnx-moonshine-base-en-quantized-2026-02-27/decoder_model_merged.ort",
+    "tokens_path": "models/sherpa-onnx-moonshine-base-en-quantized-2026-02-27/tokens.txt",
+    "num_threads": 4,
+    "provider": "cpu",
+    "whisper_language": "en",
+    "whisper_task": "transcribe",
+    "whisper_tail_paddings": -1,
+    "whisper_enable_token_timestamps": false,
+    "whisper_enable_segment_timestamps": false
+  },
+  "vad": {
+    "model_path": "models/silero_vad.onnx",
+    "threshold": 0.5,
+    "min_silence_duration": 0.4,
+    "min_speech_duration": 0.2,
+    "max_speech_duration": 15.0,
+    "window_size": 512,
+    "sample_rate": 16000,
+    "num_threads": 1,
+    "provider": "cpu",
+    "debug": false
+  },
+  "realtime": {
+    "target_sample_rate": 16000,
+    "chunk_ms": 20,
+    "audio_queue_capacity": 64,
+    "event_queue_capacity": 64,
+    "render_reference_capacity": 256
+  },
+  "tts": {
+    "enabled": false,
+    "model_path": "models/vits-piper-en_US-hfc_female-medium/en_US-hfc_female-medium.onnx",
+    "tokens_path": "models/vits-piper-en_US-hfc_female-medium/tokens.txt",
+    "data_dir": "models/vits-piper-en_US-hfc_female-medium/espeak-ng-data",
+    "dict_dir": null,
+    "num_threads": 2,
+    "provider": "cpu",
+    "speed": 1.0,
+    "speaker_id": 0,
+    "output_dir": "target/tts"
+  },
+  "aec": {
+    "enabled": true,
+    "backend": "pure_rust_aec3",
+    "sample_rate": 48000,
+    "stream_delay_ms": 120
+  }
+}

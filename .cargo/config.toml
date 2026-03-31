@@ -1,12 +1,12 @@
 [build]
 rustflags = [
 	"-L",
-	"native=sherpa-onnx-v1.12.29-linux-x64-shared/lib",
+	"native=sherpa-onnx-v1.12.34-linux-x64-shared/lib",
 	"-C",
-	"link-arg=-Wl,-rpath,$ORIGIN/../../sherpa-onnx-v1.12.29-linux-x64-shared/lib",
+	"link-arg=-Wl,-rpath,$ORIGIN/../../sherpa-onnx-v1.12.34-linux-x64-shared/lib",
 ]
 
 [env]
 # Use the Linux shared libraries bundled in this workspace.
-SHERPA_ONNX_LIB_DIR = { value = "sherpa-onnx-v1.12.29-linux-x64-shared/lib", relative = true }
-LD_LIBRARY_PATH = { value = "sherpa-onnx-v1.12.29-linux-x64-shared/lib", relative = true }
+SHERPA_ONNX_LIB_DIR = { value = "sherpa-onnx-v1.12.34-linux-x64-shared/lib", relative = true }
+LD_LIBRARY_PATH = { value = "sherpa-onnx-v1.12.34-linux-x64-shared/lib", relative = true }

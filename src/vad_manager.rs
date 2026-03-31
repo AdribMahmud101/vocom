@@ -1,6 +1,9 @@
 
-
 use sherpa_onnx::{SileroVadModelConfig, VadModelConfig, VoiceActivityDetector};
+use std::path::Path;
+
+use crate::errors::VocomError;
+
 
 #[allow(unused)]
 pub struct VadBuilder{
@@ -12,8 +15,7 @@ pub struct VadBuilder{
     min_speech_duration: f32,
     max_speech_duration: f32,
 
-    // vad configs
-    silero_vad: Option<SileroVadModelConfig>,
+    window_size: i32,
     sample_rate: i32,
     num_threads: i32,
     provider: Option<String>,
@@ -29,7 +31,7 @@ impl VadBuilder {
             min_speech_duration: 0.25,
             max_speech_duration: 5.0,
 
-            silero_vad: None,
+            window_size: 512,
             sample_rate: 16000,
             num_threads: 1,
             provider: Some("cpu".to_string()),
@@ -37,9 +39,9 @@ impl VadBuilder {
         }
     }
 
-    pub fn model(mut self, model_path: &str){
+    pub fn model(mut self, model_path: &str) -> Self {
         self.model = Some(model_path.to_string());
-
+        self
     }
 
     pub fn threshold(mut self, t: f32) -> Self{
@@ -62,19 +64,48 @@ impl VadBuilder {
         self
     }
 
+    pub fn sample_rate(mut self, sample_rate: i32) -> Self {
+        self.sample_rate = sample_rate;
+        self
+    }
+
+    pub fn window_size(mut self, window_size: i32) -> Self {
+        self.window_size = window_size;
+        self
+    }
+
+    pub fn num_threads(mut self, num_threads: i32) -> Self {
+        self.num_threads = num_threads;
+        self
+    }
+
+    pub fn provider(mut self, provider: &str) -> Self {
+        self.provider = Some(provider.to_string());
+        self
+    }
+
+    pub fn debug(mut self, debug: bool) -> Self {
+        self.debug = debug;
+        self
+    }
 
 
-    pub fn build(self)-> Result<VoiceActivityDetector, String> {
+
+    pub fn build(self)-> Result<VoiceActivityDetector, VocomError> {
+        if let Some(ref path) = self.model {
+            if !Path::new(path).exists() {
+                return Err(VocomError::MissingModelPath(path.clone()));
+            }
+        }
 
         let mut config = SileroVadModelConfig::default();
 
-        let vad_model = self.model;
-
-        config.model = vad_model;
+        config.model = self.model;
         config.threshold = self.threshold;
         config.min_silence_duration = self.min_silence_duration;
         config.min_speech_duration = self.min_speech_duration;
         config.max_speech_duration = self.max_speech_duration;
+        config.window_size = self.window_size;
 
         let vad_config = VadModelConfig{
             silero_vad: config,
@@ -89,11 +120,9 @@ impl VadBuilder {
         if let Some(vad) = VoiceActivityDetector::create(&vad_config, 30.0) {
             Ok(vad)
         } else {
-            Err("Failed to build VAD instance".to_string())
+            Err(VocomError::VadConfig("Failed to build VAD instance".to_string()))
         }
 
     }
-
-
 
 }
