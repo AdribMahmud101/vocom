@@ -2,18 +2,25 @@
 mod asr_manager;
 mod aec_manager;
 mod config;
+mod denoiser_manager;
 mod duplex_audio;
 mod engine;
+mod engine_handle;
 mod errors;
 mod realtime_pipeline;
+mod tts_sink;
+mod tts_fx;
 mod tts_manager;
 mod vad_manager;
+mod wakeword;
+mod viot;
 
 use config::EngineConfig;
 use config::ConfigWatcher;
 use engine::VocomEngine;
 use errors::VocomError;
 use std::time::{Duration, Instant};
+use wakeword::MariaWakewordSpotter;
 
 fn main() {
     if let Err(err) = run() {
@@ -23,13 +30,20 @@ fn main() {
 
 fn run() -> Result<(), VocomError> {
     let config = EngineConfig::from_env()?;
+    let wakeword_config = config.wakeword.clone();
     let mut engine = VocomEngine::start(config)?;
     let mut watcher = ConfigWatcher::new_from_env()?;
     let mut last_metrics_print = Instant::now();
+    let mut wakeword = MariaWakewordSpotter::new_with_targets(
+        Duration::from_millis(wakeword_config.cooldown_ms),
+        wakeword_config.keyword,
+        wakeword_config.variants,
+    );
+    let viot = viot::ViotController::new("http://192.168.71.1");
     engine.keep_alive();
 
     println!("Realtime transcription started. Press Ctrl+C to stop.");
-    println!("Config profile can be changed with VOCOM_PROFILE=balanced|low_latency|noisy_room");
+    println!("Config profile can be changed with VOCOM_PROFILE=balanced|low_latency|noisy_room|laptop|laptop_earbud|close_speaker_edge");
     if watcher.has_path() {
         println!("Config hot reload is enabled via VOCOM_CONFIG_FILE");
     }
@@ -98,14 +112,27 @@ fn run() -> Result<(), VocomError> {
 
         if watcher.changed()? {
             println!("Config file changed, reloading engine...");
-            match EngineConfig::from_env().and_then(VocomEngine::start) {
-                Ok(new_engine) => {
-                    engine = new_engine;
-                    engine.keep_alive();
-                    println!("Engine reload completed.");
+            match EngineConfig::from_env() {
+                Ok(new_config) => {
+                    let next_wakeword = new_config.wakeword.clone();
+                    match VocomEngine::start(new_config) {
+                        Ok(new_engine) => {
+                            wakeword = MariaWakewordSpotter::new_with_targets(
+                                Duration::from_millis(next_wakeword.cooldown_ms),
+                                next_wakeword.keyword,
+                                next_wakeword.variants,
+                            );
+                            engine = new_engine;
+                            engine.keep_alive();
+                            println!("Engine reload completed.");
+                        }
+                        Err(err) => {
+                            eprintln!("Engine reload failed, keeping previous config: {err}");
+                        }
+                    }
                 }
                 Err(err) => {
-                    eprintln!("Engine reload failed, keeping previous config: {err}");
+                    eprintln!("Config reload failed, keeping previous config: {err}");
                 }
             }
         }
@@ -116,6 +143,21 @@ fn run() -> Result<(), VocomError> {
                 "[audio={audio_ms:.0}ms decode={}ms] {}",
                 event.decode_latency_ms, event.text
             );
+
+            if let Some(m) = viot.check(&event.text) {
+                println!("[viot] matched='{}' score={:.2} → {}", m.label, m.score, m.endpoint);
+                viot.execute(&m);
+            }
+
+            if let Some(hit) = wakeword.detect(&event.text) {
+                println!(
+                    "[wakeword] keyword={} matched={} confidence={:.2} transcript='{}'",
+                    hit.keyword,
+                    hit.matched_token,
+                    hit.confidence,
+                    hit.transcript
+                );
+            }
 
             if engine.synthesize_mock_reply(&event.text)? {
                 println!("[tts] played mock response");

@@ -3,10 +3,13 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::asr_manager::{ASRModelBuilder, ASRVariant};
-use crate::config::{AsrModeConfig, AsrVariantConfig, EngineConfig};
+use crate::config::{AsrModeConfig, AsrVariantConfig, DuplexMode, EngineConfig};
 use crate::duplex_audio::{BargeInMetricsSnapshot, DuplexPlaybackGate, render_reference_bus};
 use crate::errors::VocomError;
-use crate::realtime_pipeline::{AsrBackend, RealtimeTranscriber, TranscriptEvent, start_realtime_transcriber};
+use crate::realtime_pipeline::{
+    AsrBackend, RealtimePressureSnapshot, RealtimeTranscriber, TranscriptEvent,
+    start_realtime_transcriber,
+};
 use crate::tts_manager::TtsManager;
 use crate::vad_manager::VadBuilder;
 
@@ -337,6 +340,7 @@ impl BargeInFsm {
 
 // ── Telemetry ─────────────────────────────────────────────────────────────────
 
+#[derive(Clone, Debug)]
 pub struct BargeInTelemetry {
     pub requested: u64,
     pub rejected_low_rms: u64,
@@ -374,6 +378,8 @@ pub struct VocomEngine {
 
 impl VocomEngine {
     pub fn start(config: EngineConfig) -> Result<Self, VocomError> {
+        let mut config = config;
+        config.resolve_paths();
         config.validate()?;
 
         let variant = match config.asr.variant {
@@ -395,11 +401,17 @@ impl VocomEngine {
             .whisper_enable_token_timestamps(config.asr.whisper_enable_token_timestamps)
             .whisper_enable_segment_timestamps(config.asr.whisper_enable_segment_timestamps)
             .online_decoding_method(&config.asr.online_decoding_method)
-            .online_enable_endpoint(config.asr.online_enable_endpoint);
+            .online_enable_endpoint(config.asr.online_enable_endpoint)
+            .online_rule1_min_trailing_silence(config.asr.online_rule1_min_trailing_silence)
+            .online_rule2_min_trailing_silence(config.asr.online_rule2_min_trailing_silence)
+            .online_rule3_min_utterance_length(config.asr.online_rule3_min_utterance_length);
 
         if let Some(joiner_path) = config.asr.joiner_path.as_deref() {
             asr_builder = asr_builder.joiner(joiner_path);
         }
+
+        asr_builder = asr_builder.hotwords_path(config.asr.hotwords_path.clone());
+        asr_builder = asr_builder.hotwords_score(config.asr.hotwords_score);
 
         let asr_backend = match config.asr.mode {
             AsrModeConfig::Offline => AsrBackend::Offline(asr_builder.build()?),
@@ -419,6 +431,19 @@ impl VocomEngine {
             .debug(config.vad.debug)
             .build()?;
 
+        let barge_in_vad = VadBuilder::new()
+            .model(&config.barge_in_vad.model_path)
+            .threshold(config.barge_in_vad.threshold)
+            .min_silence_duration(config.barge_in_vad.min_silence_duration)
+            .min_speech_duration(config.barge_in_vad.min_speech_duration)
+            .max_speech_duration(config.barge_in_vad.max_speech_duration)
+            .window_size(config.barge_in_vad.window_size)
+            .sample_rate(config.barge_in_vad.sample_rate)
+            .num_threads(config.barge_in_vad.num_threads)
+            .provider(&config.barge_in_vad.provider)
+            .debug(config.barge_in_vad.debug)
+            .build()?;
+
         let (render_pub, render_consumer) = render_reference_bus(
             config.realtime.render_reference_capacity,
             config.aec.sample_rate,
@@ -428,10 +453,17 @@ impl VocomEngine {
         let transcriber = start_realtime_transcriber(
             asr_backend,
             vad,
+            barge_in_vad,
             config.realtime.to_runtime(),
             config.aec.clone(),
+            config.denoiser.clone(),
             render_consumer,
             duplex_gate.clone(),
+            config.vad.dynamic_gate_enabled,
+            config.vad.noise_smoothing,
+            config.vad.noise_gate_multiplier,
+            config.vad.noise_gate_min_rms,
+            config.vad.noise_gate_max_rms,
         )?;
 
         let tts = if config.tts.enabled {
@@ -469,6 +501,30 @@ impl VocomEngine {
         Ok(engine)
     }
 
+    /// Hot-attach TTS to a running engine that was started without TTS.
+    /// This avoids the multi-second cold-start of rebuilding ASR/VAD/denoiser
+    /// when promoting a bootstrap (wakeword-listener) engine to a full engine.
+    pub fn attach_tts(&mut self, config: &EngineConfig) -> Result<(), VocomError> {
+        if self.tts.is_some() {
+            return Ok(()); // TTS already attached
+        }
+        let mut config = config.clone();
+        config.resolve_paths();
+
+        let (render_pub, _render_consumer) = render_reference_bus(
+            config.realtime.render_reference_capacity,
+            config.aec.sample_rate,
+        );
+
+        let tts = TtsManager::from_config(
+            &config.tts,
+            Some(render_pub),
+            Some(self.duplex_gate.clone()),
+        )?;
+        self.tts = Some(tts);
+        Ok(())
+    }
+
     pub fn recv(&mut self) -> Result<TranscriptEvent, VocomError> {
         self.transcriber.recv()
     }
@@ -481,6 +537,20 @@ impl VocomEngine {
         self.transcriber.keep_alive();
     }
 
+    pub fn set_duplex_mode(&mut self, mode: crate::config::DuplexMode) {
+        if mode == DuplexMode::HalfDuplexMuteMic {
+            if let Some(tts) = self.tts.as_ref() {
+                tts.restore_volume();
+            }
+        }
+        self.transcriber.set_duplex_mode(mode);
+        self.barge_in_fsm = BargeInFsm::new(self.barge_in_fsm.params.clone());
+    }
+
+    pub fn duplex_mode(&self) -> crate::config::DuplexMode {
+        self.transcriber.duplex_mode()
+    }
+
     pub fn synthesize_mock_reply(&self, transcript_text: &str) -> Result<bool, VocomError> {
         let Some(tts) = self.tts.as_ref() else {
             return Ok(false);
@@ -491,10 +561,23 @@ impl VocomEngine {
         Ok(true)
     }
 
+    pub fn synthesize_text(&self, text: &str) -> Result<bool, VocomError> {
+        let Some(tts) = self.tts.as_ref() else {
+            return Ok(false);
+        };
+
+        tts.speak_text(text)?;
+        Ok(true)
+    }
+
     /// Advance the barge-in FSM and execute the resulting action against the TTS
     /// player. Returns a human-readable description of any transition that
     /// occurred, suitable for logging.
     pub fn handle_barge_in(&mut self) -> Option<String> {
+        if self.transcriber.duplex_mode() == DuplexMode::HalfDuplexMuteMic {
+            return None;
+        }
+
         let is_tts_active = self.duplex_gate.is_tts_active();
         let barge_in_request_ts = self.duplex_gate.take_barge_in_request_with_timestamp();
 
@@ -574,6 +657,10 @@ impl VocomEngine {
             state: self.barge_in_fsm.state_name(),
             recent_transitions: self.barge_in_fsm.recent_transitions(8),
         }
+    }
+
+    pub fn runtime_pressure_snapshot(&self) -> RealtimePressureSnapshot {
+        self.transcriber.pressure_snapshot()
     }
 
     fn record_metrics_snapshot(&mut self, now_ms: u64, metrics: BargeInMetricsSnapshot) {

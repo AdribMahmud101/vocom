@@ -1,0 +1,5 @@
+rust_input: crate::ffi
+dart_output: vocom_demo/lib
+c_output: vocom_demo/ios/Runner/frb_generated.h
+rust_root: .
+rust_output: src/frb_generated.rs

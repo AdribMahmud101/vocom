@@ -1,12 +1,17 @@
 /target
 /models
-/sherpa-onnx-v1.12.25-linux-x64-shared
-/sherpa-onnx-v1.12.25-osx-universal2-shared
-/sherpa-onnx-v1.12.29-linux-x64-shared
-/sherpa-onnx-v1.12.33-linux-x64-shared
-/sherpa-onnx-v1.12.34-linux-x64-shared
 /ASR_BEGINNER_TERMS.md
 /FIX_REPORT.md
 /vad.md
 /learning
 /Documentations
+/vocom_demo
+
+# Internal technical planning / helper docs (do not expose)
+/LATENCY_10X_PLAN.md
+/THREADING_ROADMAP.md
+/iot.md
+/viot.md
+/steps.md
+/architecture.md
+/vocom_overview_bn.md

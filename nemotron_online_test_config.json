@@ -37,6 +37,7 @@
   },
   "tts": {
     "enabled": true,
+    "backend": "vits",
     "model_path": "models/vits-piper-en_US-hfc_female-medium/en_US-hfc_female-medium.onnx",
     "tokens_path": "models/vits-piper-en_US-hfc_female-medium/tokens.txt",
     "data_dir": "models/vits-piper-en_US-hfc_female-medium/espeak-ng-data",
@@ -45,6 +46,17 @@
     "provider": "cpu",
     "speed": 1.0,
     "speaker_id": 0,
+    "supertonic": {
+      "duration_predictor": null,
+      "text_encoder": null,
+      "vector_estimator": null,
+      "vocoder": null,
+      "tts_json": null,
+      "unicode_indexer": null,
+      "voice_style": null,
+      "lang": "en",
+      "num_steps": 5
+    },
     "output_dir": "target/tts"
   },
   "aec": {

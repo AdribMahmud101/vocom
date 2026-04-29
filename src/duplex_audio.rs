@@ -1,7 +1,6 @@
 use crossbeam_channel::{bounded, Receiver, Sender};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone)]
@@ -11,9 +10,7 @@ pub struct RenderReferencePublisher {
 }
 
 pub struct RenderReferenceConsumer {
-    #[cfg_attr(not(feature = "webrtc-aec"), allow(dead_code))]
     rx: Receiver<Vec<f32>>,
-    #[cfg_attr(not(feature = "webrtc-aec"), allow(dead_code))]
     sample_rate: i32,
 }
 
@@ -34,8 +31,7 @@ pub struct DuplexPlaybackGate {
     last_tts_end_ms: Arc<AtomicU64>,
     barge_in_requested: Arc<AtomicBool>,
     last_barge_in_ms: Arc<AtomicU64>,
-    last_render_rms_bits: Arc<AtomicU32>,
-    last_render_rms_ms: Arc<AtomicU64>,
+    render_meta: Arc<AtomicU64>,
     barge_in_requested_count: Arc<AtomicU64>,
     barge_in_rejected_low_rms_count: Arc<AtomicU64>,
     barge_in_rejected_render_ratio_count: Arc<AtomicU64>,
@@ -47,8 +43,8 @@ pub struct DuplexPlaybackGate {
 
 impl RenderReferencePublisher {
     pub fn publish(&self, samples: Vec<f32>) {
-        // Prefer bounded waiting over immediate drop to preserve AEC reference continuity.
-        let _ = self.tx.send_timeout(samples, Duration::from_millis(2));
+        // Never block the real-time render callback thread.
+        let _ = self.tx.try_send(samples);
     }
 
     pub fn sample_rate(&self) -> i32 {
@@ -57,12 +53,10 @@ impl RenderReferencePublisher {
 }
 
 impl RenderReferenceConsumer {
-    #[cfg_attr(not(feature = "webrtc-aec"), allow(dead_code))]
     pub fn sample_rate(&self) -> i32 {
         self.sample_rate
     }
 
-    #[cfg_attr(not(feature = "webrtc-aec"), allow(dead_code))]
     pub fn try_recv(&self) -> Option<Vec<f32>> {
         self.rx.try_recv().ok()
     }
@@ -75,8 +69,7 @@ impl DuplexPlaybackGate {
             last_tts_end_ms: Arc::new(AtomicU64::new(0)),
             barge_in_requested: Arc::new(AtomicBool::new(false)),
             last_barge_in_ms: Arc::new(AtomicU64::new(0)),
-            last_render_rms_bits: Arc::new(AtomicU32::new(0.0f32.to_bits())),
-            last_render_rms_ms: Arc::new(AtomicU64::new(0)),
+            render_meta: Arc::new(AtomicU64::new(0)),
             barge_in_requested_count: Arc::new(AtomicU64::new(0)),
             barge_in_rejected_low_rms_count: Arc::new(AtomicU64::new(0)),
             barge_in_rejected_render_ratio_count: Arc::new(AtomicU64::new(0)),
@@ -110,19 +103,23 @@ impl DuplexPlaybackGate {
     }
 
     pub fn mark_render_frame_rms(&self, rms: f32) {
-        self.last_render_rms_bits
-            .store(rms.max(0.0).to_bits(), Ordering::Release);
-        self.last_render_rms_ms.store(now_ms(), Ordering::Release);
+        let packed = pack_render_meta(rms.max(0.0), now_ms() as u32);
+        self.render_meta.store(packed, Ordering::Release);
     }
 
     pub fn render_rms_recent(&self, max_age_ms: u64) -> Option<f32> {
-        let updated_at = self.last_render_rms_ms.load(Ordering::Acquire);
-        if updated_at == 0 || now_ms().saturating_sub(updated_at) > max_age_ms {
+        let packed = self.render_meta.load(Ordering::Acquire);
+        if packed == 0 {
             return None;
         }
-        Some(f32::from_bits(
-            self.last_render_rms_bits.load(Ordering::Acquire),
-        ))
+
+        let (rms_bits, updated_at_ms) = unpack_render_meta(packed);
+        let age_ms = (now_ms() as u32).wrapping_sub(updated_at_ms) as u64;
+        if age_ms > max_age_ms {
+            return None;
+        }
+
+        Some(f32::from_bits(rms_bits))
     }
 
     pub fn request_barge_in_if_active(
@@ -207,6 +204,14 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+fn pack_render_meta(rms: f32, updated_at_ms: u32) -> u64 {
+    ((updated_at_ms as u64) << 32) | (rms.to_bits() as u64)
+}
+
+fn unpack_render_meta(packed: u64) -> (u32, u32) {
+    (packed as u32, (packed >> 32) as u32)
 }
 
 pub fn render_reference_bus(

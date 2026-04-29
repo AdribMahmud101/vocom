@@ -34,3 +34,20 @@
 34. Improve barge-in FSM reaction cadence in main loop - completed
 35. Mitigate online first-word clipping with suppression replay buffer - completed
 36. Reduce render-reference frame loss under queue pressure - completed
+37. Add dynamic VAD thresholding (noise-adaptive) - completed
+38. Add denoise stage (offline/online speech denoiser) - completed
+39. Add input overflow telemetry + mitigation policy - completed
+40. Add offline post-roll + short-silence merge for segments - completed
+41. Add model-specific online endpointing profiles - completed
+42. Add input normalization + clip guard - completed
+43. Split barge-in VAD vs segmentation VAD - completed
+44. Fix online ASR support error message for nemotron - completed
+45. Evaluate sherpa-onnx auxiliary components for robustness - completed
+
+-- Sherpa-onnx components to evaluate (docs.rs source)
+- Offline/online punctuation
+- Offline/online speech denoiser
+- Spoken language identification
+- Speaker embedding + diarization
+- Keyword spotting
+- Audio tagging

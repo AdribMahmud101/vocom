@@ -1,0 +1,270 @@
+//! VIoT — Voice-controlled IoT subsystem for Vocom.
+use std::time::{Duration, Instant};
+
+pub struct ViotCommand {
+    pub label: &'static str,
+    pub phrases: &'static [&'static str],
+    pub anchors: &'static [&'static str],
+    pub endpoint: &'static str,
+}
+
+pub static VIOT_COMMANDS: &[ViotCommand] = &[
+    ViotCommand {
+        label: "Room Light ON",
+        phrases: &["turn on the room light", "room light on", "switch on the room light", "lights on in the room", "turn the room light on"],
+        anchors: &["room", "light"],
+        endpoint: "/api/light1/on",
+    },
+    ViotCommand {
+        label: "Room Light OFF",
+        phrases: &["turn off the room light", "room light off", "switch off the room light", "turn off room light", "shut off the room light"],
+        anchors: &["room", "light", "off"],
+        endpoint: "/api/light1/off",
+    },
+    ViotCommand {
+        label: "Kitchen Light ON",
+        phrases: &["turn on kitchen light", "kitchen light on", "switch on kitchen light", "lights on in the kitchen", "turn the kitchen light on"],
+        anchors: &["kitchen", "light"],
+        endpoint: "/api/light2/on",
+    },
+    ViotCommand {
+        label: "Kitchen Light OFF",
+        phrases: &["turn off kitchen light", "kitchen light off", "switch off kitchen light", "turn off the kitchen light", "shut off kitchen light"],
+        anchors: &["kitchen", "light", "off"],
+        endpoint: "/api/light2/off",
+    },
+    ViotCommand {
+        label: "Fan ON",
+        phrases: &["turn the fan on", "fan on", "switch the fan on", "start the fan", "turn on the fan"],
+        anchors: &["fan"],
+        endpoint: "/api/fan/on",
+    },
+    ViotCommand {
+        label: "Fan OFF",
+        phrases: &["turn the fan off", "fan off", "switch the fan off", "stop the fan", "turn off the fan"],
+        anchors: &["fan", "off"],
+        endpoint: "/api/fan/off",
+    },
+];
+
+pub struct ViotMatch {
+    pub label: &'static str,
+    pub endpoint: &'static str,
+    pub score: f32,
+    pub matched_input: String,
+}
+
+pub struct ViotController {
+    /// Base URL for the ESP32 device (no trailing slash).
+    esp_base_url: std::sync::Mutex<String>,
+    /// Minimum score to trigger a command (default: 0.58).
+    pub threshold: f32,
+    /// Debounce: don't re-fire the same command within this duration.
+    pub cooldown: Duration,
+    /// Last fire times per command index (interior-mutable for Sync).
+    last_fired: std::sync::Mutex<Vec<Option<Instant>>>,
+}
+
+impl ViotController {
+    pub fn new(esp_base_url: &str) -> Self {
+        Self {
+            esp_base_url: std::sync::Mutex::new(esp_base_url.trim_end_matches('/').to_string()),
+            threshold: 0.58,
+            cooldown: Duration::from_millis(600),
+            last_fired: std::sync::Mutex::new(vec![None; VIOT_COMMANDS.len()]),
+        }
+    }
+
+    /// Update the ESP32 base URL dynamically inside the singleton.
+    pub fn set_esp_base_url(&self, url: &str) {
+        if let Ok(mut lock) = self.esp_base_url.lock() {
+            *lock = url.trim_end_matches('/').to_string();
+        }
+    }
+
+    /// Return the configured ESP32 base URL.
+    pub fn esp_base_url(&self) -> String {
+        self.esp_base_url.lock().map(|g| g.clone()).unwrap_or_else(|_| "http://192.168.71.1".to_string())
+    }
+
+    /// Check a transcript against all registered commands.
+    ///
+    /// Takes `&self` (not `&mut self`) for Sync compatibility — last_fired
+    /// is protected by an internal Mutex.
+    pub fn check(&self, transcript: &str) -> Option<ViotMatch> {
+        let normalised = normalise(transcript);
+        if normalised.is_empty() { return None; }
+
+        let mut best_score = 0.0f32;
+        let mut best_idx: Option<usize> = None;
+
+        for (idx, cmd) in VIOT_COMMANDS.iter().enumerate() {
+            let score = score_command(&normalised, cmd);
+            if score > best_score {
+                best_score = score;
+                best_idx = Some(idx);
+            }
+        }
+
+        let idx = best_idx?;
+        if best_score < self.threshold { return None; }
+
+        let mut last_fired = self.last_fired.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Debounce — don't re-fire same command within cooldown window.
+        if let Some(last) = last_fired[idx] {
+            if last.elapsed() < self.cooldown { return None; }
+        }
+        last_fired[idx] = Some(Instant::now());
+        drop(last_fired);
+
+        let cmd = &VIOT_COMMANDS[idx];
+        Some(ViotMatch {
+            label: cmd.label,
+            endpoint: cmd.endpoint,
+            score: best_score,
+            matched_input: transcript.to_string(),
+        })
+    }
+
+    pub fn execute(&self, m: &ViotMatch) {
+        let url = format!("{}{}", self.esp_base_url(), m.endpoint);
+        let label = m.label;
+        std::thread::Builder::new()
+            .name(format!("viot-http-{label}"))
+            .spawn(move || {
+                match http_get(&url) {
+                    Ok(status) => println!("[viot] ESP32 responded HTTP {status} for {url}"),
+                    Err(e) => eprintln!("[viot] ESP32 HTTP request failed for {url}: {e}"),
+                }
+            })
+            .ok();
+    }
+}
+
+fn normalise(s: &str) -> String {
+    s.chars().map(|c| if c.is_alphabetic() || c == ' ' { c.to_ascii_lowercase() } else { ' ' })
+        .collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn words(s: &str) -> Vec<&str> { s.split_whitespace().collect() }
+
+fn score_command(normalised_input: &str, cmd: &ViotCommand) -> f32 {
+    let input_words = words(normalised_input);
+    let mut best = 0.0f32;
+    for phrase in cmd.phrases {
+        let norm_phrase = &normalise(phrase);
+        let phrase_words = words(norm_phrase);
+
+        if normalised_input == norm_phrase.as_str() { return 1.0; }
+
+        let jaccard = jaccard_similarity(&input_words, &phrase_words);
+        let lcs = lcs_ratio(&input_words, &phrase_words);
+        let lev = levenshtein_similarity(normalised_input, norm_phrase);
+        let anchor_boost = keyword_anchor_boost(normalised_input, cmd.anchors);
+
+        let blended = jaccard * 0.35 + lcs * 0.30 + lev * 0.25 + anchor_boost;
+        if blended > best { best = blended; }
+    }
+    best
+}
+
+fn jaccard_similarity(a: &[&str], b: &[&str]) -> f32 {
+    if a.is_empty() && b.is_empty() { return 1.0; }
+    let mut set_a = a.to_vec(); let mut set_b = b.to_vec();
+    set_a.sort_unstable(); set_b.sort_unstable();
+
+    let mut intersection = 0usize; let mut i = 0; let mut j = 0;
+    while i < set_a.len() && j < set_b.len() {
+        match set_a[i].cmp(set_b[j]) {
+            std::cmp::Ordering::Equal => { intersection += 1; i += 1; j += 1; },
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+        }
+    }
+    let union = set_a.len() + set_b.len() - intersection;
+    if union == 0 { return 1.0; }
+    intersection as f32 / union as f32
+}
+
+fn lcs_ratio(a: &[&str], b: &[&str]) -> f32 {
+    let m = a.len(); let n = b.len();
+    if m == 0 && n == 0 { return 1.0; }
+    if m == 0 || n == 0 { return 0.0; }
+
+    let mut prev = vec![0usize; n + 1];
+    let mut curr = vec![0usize; n + 1];
+
+    for i in 1..=m {
+        for j in 1..=n {
+            curr[j] = if a[i - 1] == b[j - 1] { prev[j - 1] + 1 } else { prev[j].max(curr[j - 1]) };
+        }
+        std::mem::swap(&mut prev, &mut curr);
+        curr.fill(0);
+    }
+    2.0 * prev[n] as f32 / (m + n) as f32
+}
+
+fn levenshtein_similarity(a: &str, b: &str) -> f32 {
+    let a: Vec<char> = a.chars().collect(); let b: Vec<char> = b.chars().collect();
+    let m = a.len(); let n = b.len();
+
+    if m == 0 && n == 0 { return 1.0; }
+    let max_len = m.max(n);
+    if m == 0 || n == 0 { return 0.0; }
+
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr = vec![0usize; n + 1];
+
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            curr[j] = if a[i - 1] == b[j - 1] { prev[j - 1] } else { 1 + prev[j].min(curr[j - 1]).min(prev[j - 1]) };
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    1.0 - (prev[n] as f32 / max_len as f32)
+}
+
+fn keyword_anchor_boost(normalised_input: &str, anchors: &[&str]) -> f32 {
+    if anchors.is_empty() { return 0.0; }
+    let all_present = anchors.iter().all(|anchor| normalised_input.split_whitespace().any(|w| w == *anchor));
+    if all_present { 0.15 } else { 0.0 }
+}
+
+/// Public re-export of the HTTP GET helper for use by ffi.rs.
+pub fn http_get_pub(url: &str) -> Result<u16, String> {
+    http_get(url)
+}
+
+fn http_get(url: &str) -> Result<u16, String> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpStream;
+    use std::time::Duration as StdDuration;
+
+    let without_scheme = url.strip_prefix("http://").ok_or_else(|| format!("unsupported scheme: {url}"))?;
+    let (host_port, path) = match without_scheme.find('/') {
+        Some(idx) => (&without_scheme[..idx], &without_scheme[idx..]),
+        None => (without_scheme, "/"),
+    };
+
+    let (host, port): (&str, u16) = if let Some(idx) = host_port.rfind(':') {
+        (&host_port[..idx], host_port[idx + 1..].parse::<u16>().map_err(|e| format!("invalid port: {e}"))?)
+    } else {
+        (host_port, 80)
+    };
+
+    let addr = format!("{host}:{port}");
+    let mut stream = TcpStream::connect(&addr).map_err(|e| format!("connect to {addr}: {e}"))?;
+    stream.set_read_timeout(Some(StdDuration::from_secs(4))).ok();
+    stream.set_write_timeout(Some(StdDuration::from_secs(4))).ok();
+
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).map_err(|e| format!("write request: {e}"))?;
+
+    let mut reader = BufReader::new(stream);
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line).map_err(|e| format!("read response: {e}"))?;
+
+    Ok(status_line.split_whitespace().nth(1).and_then(|s| s.parse::<u16>().ok()).unwrap_or(0))
+}
